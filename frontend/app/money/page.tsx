@@ -2,6 +2,8 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import TransactionManager from '@/components/transaction-manager';
+import { useLanguage } from '@/components/language';
+import { useToastNotifications } from '@/components/notifications';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:5000';
 type Supplier = { id: number; name: string };
@@ -15,21 +17,23 @@ const defaultForm = {
 };
 
 export default function MoneyPage() {
+  const { t } = useLanguage();
   const [form, setForm] = useState(defaultForm);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  useToastNotifications(message, error);
 
   useEffect(() => {
     fetch(`${API_URL}/api/suppliers`, { credentials: 'include' })
       .then(async (response) => {
-        if (!response.ok) throw new Error('Unable to load suppliers.');
+        if (!response.ok) throw new Error(t('Unable to load suppliers.'));
         return response.json();
       })
       .then((items: Supplier[]) => setSuppliers(items))
-      .catch((requestError: unknown) => setError(requestError instanceof Error ? requestError.message : 'Unable to load suppliers.'));
-  }, []);
+      .catch((requestError: unknown) => setError(requestError instanceof Error ? requestError.message : t('Unable to load suppliers.')));
+  }, [t]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -58,11 +62,11 @@ export default function MoneyPage() {
           supplierId: type === 'supplier_payment' ? Number(form.supplierId) : undefined
         })
       });
-      if (!response.ok) throw new Error('The transaction could not be saved.');
+      if (!response.ok) throw new Error(t('The transaction could not be saved.'));
       setForm({ ...defaultForm, amount: '', description: '' });
-      setMessage('Transaction saved successfully.');
+      setMessage(t('Transaction saved successfully.'));
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'The transaction could not be saved.');
+      setError(requestError instanceof Error ? requestError.message : t('The transaction could not be saved.'));
     } finally {
       setSaving(false);
     }
@@ -72,8 +76,8 @@ export default function MoneyPage() {
     <div>
       <div className="page-header">
         <div>
-          <p className="eyebrow">Money Management</p>
-          <h2>Add business investment</h2>
+          <p className="eyebrow">{t('Money Management')}</p>
+          <h2>{t('Add business investment')}</h2>
         </div>
       </div>
 
@@ -82,28 +86,28 @@ export default function MoneyPage() {
         {message && <p className="success-message" role="status">{message}</p>}
         <form onSubmit={handleSubmit} className="form-grid">
           <label>
-            <span>Transaction amount (RWF)</span>
+            <span>{t('Transaction amount (RWF)')}</span>
             <input type="number" min="1" required value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} />
           </label>
 
           <label>
-            <span>Investment type</span>
+            <span>{t('Investment type')}</span>
             <select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value })}>
-              <option>Initial capital</option>
-              <option>Additional investment</option>
-              <option>Record income</option>
-              <option>Record expenses</option>
-              <option>Record withdrawals</option>
-              <option>Pay supplier</option>
-              <option>Record adjustment</option>
+              <option value="Initial capital">{t('Initial capital')}</option>
+              <option value="Additional investment">{t('Additional investment')}</option>
+              <option value="Record income">{t('Record income')}</option>
+              <option value="Record expenses">{t('Record expenses')}</option>
+              <option value="Record withdrawals">{t('Record withdrawals')}</option>
+              <option value="Pay supplier">{t('Pay supplier')}</option>
+              <option value="Record adjustment">{t('Record adjustment')}</option>
             </select>
           </label>
 
           {form.type === 'Pay supplier' && (
             <label>
-              <span>Supplier</span>
+              <span>{t('Supplier')}</span>
               <select required value={form.supplierId} onChange={(event) => setForm({ ...form, supplierId: event.target.value })}>
-                <option value="">Select a supplier</option>
+                <option value="">{t('Select a supplier')}</option>
                 {suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
               </select>
             </label>
@@ -111,29 +115,29 @@ export default function MoneyPage() {
 
           {form.type === 'Record adjustment' && (
             <label>
-              <span>Adjustment direction</span>
+              <span>{t('Adjustment direction')}</span>
               <select value={form.adjustmentDirection} onChange={(event) => setForm({ ...form, adjustmentDirection: event.target.value })}>
-                <option value="increase">Increase available cash</option>
-                <option value="decrease">Decrease available cash</option>
+                <option value="increase">{t('Increase available cash')}</option>
+                <option value="decrease">{t('Decrease available cash')}</option>
               </select>
             </label>
           )}
 
           <label>
-            <span>Investment date</span>
+            <span>{t('Investment date')}</span>
             <input type="date" required value={form.date} onChange={(event) => setForm({ ...form, date: event.target.value })} />
           </label>
 
           <label className="full-width">
-            <span>Description</span>
+            <span>{t('Description')}</span>
             <textarea rows={3} required value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
           </label>
 
-          <button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save transaction'}</button>
+          <button className="primary-button" type="submit" disabled={saving}>{saving ? t('Saving…') : t('Save transaction')}</button>
         </form>
       </div>
       <section className="management-section">
-        <div className="page-header"><div><p className="eyebrow">Manage records</p><h2>Capital, expenses and payments</h2></div></div>
+        <div className="page-header"><div><p className="eyebrow">{t('Manage records')}</p><h2>{t('Capital, expenses and payments')}</h2></div></div>
         <TransactionManager financialOnly />
       </section>
     </div>

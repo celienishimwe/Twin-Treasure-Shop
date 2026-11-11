@@ -2,6 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { LanguagePicker, useLanguage } from '@/components/language';
+import ThemeToggle from '@/components/theme-toggle';
 
 type SidebarProps = {
   userEmail: string;
@@ -19,6 +21,7 @@ const navigation = [
 
 export default function Sidebar({ userEmail, onLogout }: SidebarProps) {
   const pathname = usePathname();
+  const { t } = useLanguage();
 
   return (
     <aside className="sidebar">
@@ -30,14 +33,14 @@ export default function Sidebar({ userEmail, onLogout }: SidebarProps) {
         </div>
       </Link>
 
-      <div className="sidebar-section-label">WORKSPACE</div>
-      <nav className="nav" aria-label="Main navigation">
+      <div className="sidebar-section-label">{t('WORKSPACE')}</div>
+      <nav className="nav" aria-label={t('Main navigation')}>
         {navigation.map((item) => {
           const active = pathname === item.href;
           return (
             <Link key={item.href} href={item.href} className={`nav-link${active ? ' active' : ''}`} aria-current={active ? 'page' : undefined}>
               <span className="nav-icon" aria-hidden="true">{item.icon}</span>
-              <span>{item.label}</span>
+              <span>{t(item.label)}</span>
               {active && <span className="nav-current" aria-hidden="true">›</span>}
             </Link>
           );
@@ -45,9 +48,11 @@ export default function Sidebar({ userEmail, onLogout }: SidebarProps) {
       </nav>
 
       <div className="sidebar-bottom">
+        <ThemeToggle />
+        <LanguagePicker />
         <span className="connection-indicator" />
-        <div className="sidebar-user"><strong>{userEmail}</strong><small>Owner account</small></div>
-        <button className="logout-button" type="button" onClick={onLogout} aria-label="Sign out">↪</button>
+        <div className="sidebar-user"><strong>{userEmail}</strong><small>{t('Owner account')}</small></div>
+        <button className="logout-button" type="button" onClick={onLogout} aria-label={t('Sign out')}>↪</button>
       </div>
     </aside>
   );

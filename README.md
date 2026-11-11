@@ -40,6 +40,10 @@ Authentication uses an HTTP-only, signed session cookie. Set `SESSION_SECRET` to
 - Product investment and supplier transactions
 - Transaction history
 - Daily, weekly, and monthly profit/loss reports
+- English and Kinyarwanda interface translations with a browser-persisted language preference
+- Persistent dark/light theme selection
+- Tailwind CSS utilities configured for the frontend (existing CSS reset is preserved)
+- Toast notifications for successful actions, errors, and sign-in/sign-out
 
 ## Record management
 
