@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useState } from 'react';
+import TransactionManager from '@/components/transaction-manager';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:5000';
 type Supplier = { id: number; name: string };
@@ -131,6 +132,10 @@ export default function MoneyPage() {
           <button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save transaction'}</button>
         </form>
       </div>
+      <section className="management-section">
+        <div className="page-header"><div><p className="eyebrow">Manage records</p><h2>Capital, expenses and payments</h2></div></div>
+        <TransactionManager financialOnly />
+      </section>
     </div>
   );
 }

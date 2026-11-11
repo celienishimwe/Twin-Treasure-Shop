@@ -41,9 +41,17 @@ Authentication uses an HTTP-only, signed session cookie. Set `SESSION_SECRET` to
 - Transaction history
 - Daily, weekly, and monthly profit/loss reports
 
+## Record management
+
+- Product Management supports product and sale create, edit, and delete operations.
+- Product Investment supports purchase and supplier create, edit, and delete operations, plus supplier returns and stock adjustments.
+- Money Management and Transaction History support editing and deleting financial source records; deleting a record also updates its linked ledger and stock rows in a database transaction.
+- Dashboard and report pages are derived views; use the linked management menus to change their underlying data.
+- Products with stock or sales/purchase history and suppliers with financial/purchase history cannot be hard-deleted. Purchases with later stock activity cannot be edited or deleted because doing so would invalidate weighted-average cost and historical stock.
+
 ## Profit and cash calculations
 
-- Gross profit = sales revenue − cost of products sold.
+- Gross profit = sales revenue - cost of products sold.
 - Net profit/loss = sales revenue − cost of products sold − operating expenses.
 - Capital contributions and owner withdrawals affect cash, not profit. Inventory purchases add inventory and supplier payments reduce cash; product cost is counted when the item sells.
 - Closing cash balance is the signed total of all recorded cash movements through the selected period's end date.

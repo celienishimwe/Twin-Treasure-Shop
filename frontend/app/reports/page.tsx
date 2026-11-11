@@ -99,7 +99,7 @@ export default function ReportsPage() {
           <div className="card report-note">
             <h3>How profit is calculated</h3>
             <p><strong>Gross profit</strong> = sales revenue − cost of products sold.</p>
-            <p><strong>Net profit / loss</strong> = gross profit + other recorded income − operating expenses.</p>
+            <p><strong>Net profit / loss</strong> = gross profit − operating expenses.</p>
             <p>Supplier payments and inventory purchases reduce cash but are not counted as operating expenses; product cost is counted when the item sells.</p>
             {report.otherIncome > 0 && <p>Other recorded income this period: <strong>{formatMoney(report.otherIncome)}</strong>.</p>}
           </div>

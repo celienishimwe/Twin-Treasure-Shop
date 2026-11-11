@@ -131,6 +131,13 @@ button:disabled { opacity: .6; cursor: wait; }
   font-weight: 700;
   cursor: pointer;
 }
+.danger-button { min-height: 34px; padding: 7px 11px; border: 1px solid rgba(241, 125, 136, .35); border-radius: 8px; color: #ffc2c8; background: rgba(110, 31, 48, .24); font-size: .75rem; font-weight: 700; cursor: pointer; }
+.danger-button:hover { border-color: rgba(241, 125, 136, .7); background: rgba(110, 31, 48, .42); }
+.row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.management-section { margin-top: 28px; }
+.transaction-manager { overflow-x: auto; }
+.transaction-table-header, .transaction-table-row { min-width: 760px; grid-template-columns: minmax(110px, 1fr) minmax(180px, 2fr) minmax(105px, 1fr) minmax(130px, 1fr) minmax(145px, auto); align-items: center; }
+.transaction-edit-form { margin-bottom: 20px; padding: 16px; border: 1px solid var(--border); border-radius: 9px; background: rgba(12, 24, 36, .44); }
 .primary-button { background: linear-gradient(135deg, #109986, #087c78); box-shadow: 0 7px 18px rgba(3, 154, 132, .19); }
 .primary-button:hover { background: linear-gradient(135deg, #16ae98, #0b8d84); }
 .outline-button { border-color: var(--border); background: #182534; color: #c3d5d9; }

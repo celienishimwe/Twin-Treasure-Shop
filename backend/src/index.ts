@@ -64,6 +64,8 @@ async function getProducts(): Promise<any[]> {
     name: row.name,
     buyingPrice: Number(row.average_cost),
     sellingPrice: Number(row.selling_price),
+    sku: row.sku,
+    reorderLevel: Number(row.reorder_level),
     quantityPurchased: Number(row.quantity_purchased),
     soldQuantity: Number(row.sold_quantity),
     availableQuantity: Number(row.quantity_on_hand),
@@ -85,7 +87,9 @@ async function getTransactions(): Promise<any[]> {
          ELSE t.event_type
        END AS type,
        (SELECT SUM(si.cost_total) FROM sale_items si WHERE si.sale_id = t.sale_id) AS cost_amount,
-       (SELECT sr.settlement_type FROM supplier_returns sr WHERE sr.id = t.supplier_return_id) AS settlement_type
+       (SELECT sr.settlement_type FROM supplier_returns sr WHERE sr.id = t.supplier_return_id) AS settlement_type,
+       (SELECT sp.supplier_id FROM supplier_payments sp WHERE sp.id = t.supplier_payment_id) AS supplier_id,
+       (SELECT e.category FROM expenses e WHERE e.id = t.expense_id) AS expense_category
      FROM transactions t
      ORDER BY t.occurred_at DESC, t.id DESC`
   );
@@ -95,7 +99,10 @@ async function getTransactions(): Promise<any[]> {
     amount: Number(row.cash_impact),
     description: row.description,
     date: new Date(row.occurred_at).toISOString(),
-    category: row.event_type,
+    category: row.expense_category ?? row.event_type,
+    eventType: row.event_type,
+    sourceId: Number(row.business_capital_id ?? row.product_purchase_id ?? row.sale_id ?? row.expense_id ?? row.supplier_payment_id ?? row.supplier_return_id),
+    supplierId: row.supplier_id === null ? null : Number(row.supplier_id),
     totalAmount: row.event_type === 'inventory_purchase' || row.event_type === 'supplier_return' ? Number(row.amount) : null,
     paymentStatus: null,
     costAmount: row.cost_amount === null ? null : Number(row.cost_amount),
@@ -151,12 +158,12 @@ function calculateFinancialReport(
   const totalInvestment = sum(inPeriod, (item) => item.type === 'investment');
   const totalSalesRevenue = sum(inPeriod, (item) => item.type === 'sale');
   const totalExpenses = Math.abs(sum(inPeriod, (item) => item.type === 'expense'));
-  const otherIncome = sum(inPeriod, (item) => item.type === 'income');
+  const otherIncome = 0;
   const costOfProductsSold = inPeriod
     .filter((item) => item.type === 'sale')
     .reduce((total, sale) => total + costOfSale(sale), 0);
   const grossProfit = totalSalesRevenue - costOfProductsSold;
-  const netProfit = grossProfit + otherIncome - totalExpenses;
+  const netProfit = grossProfit - totalExpenses;
   const closingCashBalance = transactions
     .filter((item) => String(item.date).slice(0, 10) <= endDate)
     .reduce((total, item) => total + Number(item.amount || 0), 0);
@@ -432,15 +439,16 @@ app.post('/api/products', async (req: Request, res: Response) => {
   const body = req.body ?? {};
   const name = String(body.name ?? '').trim();
   const sellingPrice = Number(body.sellingPrice);
-  if (!name || !Number.isFinite(sellingPrice) || sellingPrice < 0) {
-    res.status(400).json({ error: 'A product name and non-negative selling price are required.' });
+  const reorderLevel = Number(body.reorderLevel ?? 0);
+  if (!name || !Number.isFinite(sellingPrice) || sellingPrice < 0 || !Number.isInteger(reorderLevel) || reorderLevel < 0) {
+    res.status(400).json({ error: 'A product name, non-negative selling price, and whole-number reorder level are required.' });
     return;
   }
   try {
     const result = await pool.query(
-      `INSERT INTO products (name, selling_price)
-       VALUES ($1, $2) RETURNING id, name, selling_price, quantity_on_hand, average_cost, updated_at`,
-      [name, sellingPrice]
+      `INSERT INTO products (name, sku, selling_price, reorder_level)
+       VALUES ($1, $2, $3, $4) RETURNING id, name, selling_price, quantity_on_hand, average_cost, updated_at`,
+      [name, body.sku ? String(body.sku).trim() : null, sellingPrice, reorderLevel]
     );
     const row = result.rows[0];
     res.status(201).json({
@@ -458,6 +466,68 @@ app.post('/api/products', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Could not create product:', error);
     res.status(500).json({ error: 'Product could not be saved.' });
+  }
+});
+
+app.put('/api/products/:id', async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const { name, sellingPrice, sku, reorderLevel } = req.body ?? {};
+  const productName = String(name ?? '').trim();
+  const price = Number(sellingPrice);
+  const reorder = Number(reorderLevel ?? 0);
+  if (!Number.isInteger(id) || id <= 0 || !productName || !Number.isFinite(price) || price < 0
+    || !Number.isInteger(reorder) || reorder < 0) {
+    res.status(400).json({ error: 'Provide a product name, non-negative selling price, and whole-number reorder level.' });
+    return;
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE products
+       SET name = $1, selling_price = $2, sku = $3, reorder_level = $4, updated_at = NOW()
+       WHERE id = $5 AND is_active = TRUE
+       RETURNING id, name, sku, selling_price, quantity_on_hand, average_cost, reorder_level, updated_at`,
+      [productName, price, sku ? String(sku).trim() : null, reorder, id]
+    );
+    if (!result.rowCount) {
+      res.status(404).json({ error: 'Product not found.' });
+      return;
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Could not update product:', error);
+    res.status(409).json({ error: 'Product could not be updated. Check that its SKU is unique.' });
+  }
+});
+
+app.delete('/api/products/:id', async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid product ID.' });
+    return;
+  }
+  try {
+    const result = await pool.query(
+      `DELETE FROM products p
+       WHERE p.id = $1
+         AND NOT EXISTS (SELECT 1 FROM purchase_items WHERE product_id = p.id)
+         AND NOT EXISTS (SELECT 1 FROM sale_items WHERE product_id = p.id)
+         AND NOT EXISTS (SELECT 1 FROM stock_movements WHERE product_id = p.id)
+       RETURNING p.id`,
+      [id]
+    );
+    if (result.rowCount) {
+      res.status(204).end();
+      return;
+    }
+    const exists = await pool.query('SELECT 1 FROM products WHERE id = $1', [id]);
+    res.status(exists.rowCount ? 409 : 404).json({
+      error: exists.rowCount
+        ? 'Product has purchase, sale, or stock history and cannot be deleted.'
+        : 'Product not found.'
+    });
+  } catch (error) {
+    console.error('Could not delete product:', error);
+    res.status(500).json({ error: 'Product could not be deleted.' });
   }
 });
 
@@ -559,6 +629,204 @@ app.post('/api/product-purchases', async (req: Request, res: Response) => {
   }
 });
 
+app.get('/api/product-purchases', async (_req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      `SELECT pp.id, pp.purchase_date, pp.status, pp.supplier_id, su.name AS supplier,
+         pi.id AS item_id, pi.product_id, p.name AS product,
+         pi.quantity, pi.unit_cost, pi.line_total,
+         COALESCE(SUM(sp.amount), 0) AS paid_amount
+       FROM product_purchases pp
+       JOIN suppliers su ON su.id = pp.supplier_id
+       JOIN purchase_items pi ON pi.purchase_id = pp.id
+       JOIN products p ON p.id = pi.product_id
+       LEFT JOIN supplier_payments sp ON sp.purchase_id = pp.id
+       GROUP BY pp.id, su.name, pi.id, p.name
+       ORDER BY pp.purchase_date DESC, pp.id DESC`
+    );
+    res.json(result.rows.map((row) => ({
+      id: Number(row.id),
+      date: new Date(row.purchase_date).toISOString().slice(0, 10),
+      status: row.status,
+      supplierId: Number(row.supplier_id),
+      supplier: row.supplier,
+      productId: Number(row.product_id),
+      product: row.product,
+      quantity: Number(row.quantity),
+      buyingPrice: Number(row.unit_cost),
+      totalAmount: Number(row.line_total),
+      paidAmount: Number(row.paid_amount)
+    })));
+  } catch (error) {
+    console.error('Could not load product purchases:', error);
+    res.status(500).json({ error: 'Unable to load product purchases.' });
+  }
+});
+
+app.put('/api/product-purchases/:id', async (req: Request, res: Response) => {
+  const purchaseId = Number(req.params.id);
+  const quantity = Number(req.body?.quantity);
+  const unitCost = Number(req.body?.buyingPrice);
+  const date = String(req.body?.date ?? '');
+  if (!Number.isInteger(purchaseId) || purchaseId <= 0 || !Number.isInteger(quantity) || quantity <= 0
+    || !Number.isFinite(unitCost) || unitCost <= 0 || !isValidDate(date)) {
+    res.status(400).json({ error: 'Provide a valid purchase ID, positive quantity and cost, and purchase date.' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const found = await client.query(
+      `SELECT pp.id, pp.purchase_date, pi.id AS item_id, pi.product_id, pi.quantity AS old_quantity,
+         pi.unit_cost AS old_cost, p.name, p.quantity_on_hand, p.average_cost
+       FROM product_purchases pp
+       JOIN purchase_items pi ON pi.purchase_id = pp.id
+       JOIN products p ON p.id = pi.product_id
+       WHERE pp.id = $1 AND pp.status = 'received'
+       FOR UPDATE OF pp, pi, p`,
+      [purchaseId]
+    );
+    const purchase = found.rows[0];
+    if (!purchase) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Received purchase not found.' });
+      return;
+    }
+    const movement = await client.query('SELECT id FROM stock_movements WHERE purchase_item_id = $1 FOR UPDATE', [purchase.item_id]);
+    if (!movement.rowCount) throw new Error('Purchase stock movement is missing.');
+    const purchaseDate = new Date(`${date}T00:00:00.000Z`);
+    const laterStockActivity = await client.query(
+      `SELECT 1 FROM stock_movements
+       WHERE product_id = $1 AND movement_type <> 'purchase'
+         AND occurred_at >= LEAST($2::timestamptz, $3::timestamptz)
+         AND id <> $4 LIMIT 1`,
+      [purchase.product_id, purchase.purchase_date, purchaseDate, movement.rows[0].id]
+    );
+    if (laterStockActivity.rowCount) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'Purchase cannot be edited after later stock activity; use a supplier return for corrections.' });
+      return;
+    }
+    const oldQuantity = Number(purchase.old_quantity);
+    const available = Number(purchase.quantity_on_hand) - oldQuantity + quantity;
+    if (available < 0) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'Purchase quantity cannot be reduced below current stock.' });
+      return;
+    }
+    const outstanding = await client.query(
+      'SELECT COALESCE(SUM(amount), 0) AS amount FROM supplier_payments WHERE purchase_id = $1',
+      [purchaseId]
+    );
+    const total = quantity * unitCost;
+    if (Number(outstanding.rows[0].amount) > total) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'Purchase total cannot be lower than payments already recorded.' });
+      return;
+    }
+    const stockValue = Number(purchase.quantity_on_hand) * Number(purchase.average_cost)
+      - oldQuantity * Number(purchase.old_cost) + quantity * unitCost;
+    if (stockValue < -0.01) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'Purchase cannot be edited because it would make inventory valuation invalid.' });
+      return;
+    }
+    const averageCost = available === 0 ? 0 : stockValue / available;
+    await client.query(
+      'UPDATE product_purchases SET purchase_date = $1, updated_at = NOW() WHERE id = $2',
+      [purchaseDate, purchaseId]
+    );
+    await client.query(
+      'UPDATE purchase_items SET quantity = $1, unit_cost = $2 WHERE id = $3',
+      [quantity, unitCost, purchase.item_id]
+    );
+    await client.query(
+      `UPDATE stock_movements SET quantity_delta = $1, unit_cost = $2, occurred_at = $3 WHERE id = $4`,
+      [quantity, unitCost, purchaseDate, movement.rows[0].id]
+    );
+    await client.query(
+      'UPDATE products SET quantity_on_hand = $1, average_cost = $2, updated_at = NOW() WHERE id = $3',
+      [available, averageCost, purchase.product_id]
+    );
+    await client.query(
+      `UPDATE transactions SET amount = $1, occurred_at = $2,
+         description = $3 WHERE product_purchase_id = $4`,
+      [total, purchaseDate, `${quantity} ${purchase.name} purchased`, purchaseId]
+    );
+    await client.query('COMMIT');
+    res.json({ id: purchaseId, quantity, buyingPrice: unitCost, totalAmount: total });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Could not update product purchase:', error);
+    res.status(500).json({ error: 'The purchase could not be updated.' });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete('/api/product-purchases/:id', async (req: Request, res: Response) => {
+  const purchaseId = Number(req.params.id);
+  if (!Number.isInteger(purchaseId) || purchaseId <= 0) {
+    res.status(400).json({ error: 'Invalid purchase ID.' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const found = await client.query(
+      `SELECT pp.id, pp.purchase_date, pi.id AS item_id, pi.product_id, pi.quantity, pi.unit_cost,
+         p.quantity_on_hand, p.average_cost
+       FROM product_purchases pp
+       JOIN purchase_items pi ON pi.purchase_id = pp.id
+       JOIN products p ON p.id = pi.product_id
+       WHERE pp.id = $1 AND pp.status = 'received'
+       FOR UPDATE OF pp, pi, p`,
+      [purchaseId]
+    );
+    const purchase = found.rows[0];
+    if (!purchase) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Received purchase not found.' });
+      return;
+    }
+    const laterStockActivity = await client.query(
+      `SELECT 1 FROM stock_movements
+       WHERE product_id = $1 AND movement_type <> 'purchase' AND occurred_at >= $2 LIMIT 1`,
+      [purchase.product_id, purchase.purchase_date]
+    );
+    if (laterStockActivity.rowCount || Number(purchase.quantity_on_hand) < Number(purchase.quantity)) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'Purchase cannot be deleted after later stock activity.' });
+      return;
+    }
+    const newQuantity = Number(purchase.quantity_on_hand) - Number(purchase.quantity);
+    const stockValue = Number(purchase.quantity_on_hand) * Number(purchase.average_cost)
+      - Number(purchase.quantity) * Number(purchase.unit_cost);
+    if (stockValue < -0.01) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'Purchase cannot be deleted because it would make inventory valuation invalid.' });
+      return;
+    }
+    await client.query('UPDATE supplier_payments SET purchase_id = NULL WHERE purchase_id = $1', [purchaseId]);
+    await client.query('DELETE FROM transactions WHERE product_purchase_id = $1', [purchaseId]);
+    await client.query('DELETE FROM stock_movements WHERE purchase_item_id = $1', [purchase.item_id]);
+    await client.query('DELETE FROM purchase_items WHERE id = $1', [purchase.item_id]);
+    await client.query('DELETE FROM product_purchases WHERE id = $1', [purchaseId]);
+    await client.query(
+      `UPDATE products SET quantity_on_hand = $1, average_cost = $2, updated_at = NOW() WHERE id = $3`,
+      [newQuantity, newQuantity === 0 ? 0 : Math.max(0, stockValue) / newQuantity, purchase.product_id]
+    );
+    await client.query('COMMIT');
+    res.status(204).end();
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Could not delete product purchase:', error);
+    res.status(500).json({ error: 'The purchase could not be deleted.' });
+  } finally {
+    client.release();
+  }
+});
+
 app.post('/api/sales', async (req: Request, res: Response) => {
   const body = req.body ?? {};
   const productId = Number(body.productId);
@@ -630,6 +898,166 @@ app.post('/api/sales', async (req: Request, res: Response) => {
   }
 });
 
+app.get('/api/sales', async (_req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      `SELECT s.id, s.sale_date, s.status, si.id AS item_id, si.product_id, p.name AS product,
+         si.quantity, si.unit_price, si.unit_cost_at_sale, si.line_total, si.cost_total
+       FROM sales s
+       JOIN sale_items si ON si.sale_id = s.id
+       JOIN products p ON p.id = si.product_id
+       ORDER BY s.sale_date DESC, s.id DESC`
+    );
+    res.json(result.rows.map((row) => ({
+      id: Number(row.id),
+      date: new Date(row.sale_date).toISOString().slice(0, 10),
+      status: row.status,
+      itemId: Number(row.item_id),
+      productId: Number(row.product_id),
+      product: row.product,
+      quantity: Number(row.quantity),
+      unitPrice: Number(row.unit_price),
+      unitCost: Number(row.unit_cost_at_sale),
+      revenue: Number(row.line_total),
+      cost: Number(row.cost_total)
+    })));
+  } catch (error) {
+    console.error('Could not load sales:', error);
+    res.status(500).json({ error: 'Unable to load sales.' });
+  }
+});
+
+app.put('/api/sales/:id', async (req: Request, res: Response) => {
+  const saleId = Number(req.params.id);
+  const productId = Number(req.body?.productId);
+  const quantity = Number(req.body?.quantity);
+  const unitPrice = Number(req.body?.unitPrice);
+  const date = String(req.body?.date ?? '');
+  if (!Number.isInteger(saleId) || saleId <= 0 || !Number.isInteger(productId) || productId <= 0
+    || !Number.isInteger(quantity) || quantity <= 0 || !Number.isFinite(unitPrice) || unitPrice <= 0 || !isValidDate(date)) {
+    res.status(400).json({ error: 'Provide a valid sale, product, positive quantity and price, and date.' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const saleResult = await client.query(
+      `SELECT s.id, si.id AS item_id, si.product_id AS old_product_id, si.quantity AS old_quantity
+       FROM sales s JOIN sale_items si ON si.sale_id = s.id
+       WHERE s.id = $1 AND s.status = 'completed'
+       FOR UPDATE OF s, si`,
+      [saleId]
+    );
+    const sale = saleResult.rows[0];
+    if (!sale) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Completed sale not found.' });
+      return;
+    }
+
+    const lockedProducts = await client.query(
+      `SELECT id, name, is_active, quantity_on_hand, average_cost FROM products
+       WHERE id = ANY($1::bigint[]) ORDER BY id FOR UPDATE`,
+      [[Number(sale.old_product_id), productId]]
+    );
+    const oldProduct = lockedProducts.rows.find((row) => Number(row.id) === Number(sale.old_product_id));
+    const newProduct = lockedProducts.rows.find((row) => Number(row.id) === productId);
+    if (!newProduct || !newProduct.is_active) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Active product not found.' });
+      return;
+    }
+    const available = Number(newProduct.quantity_on_hand)
+      + (productId === Number(sale.old_product_id) ? Number(sale.old_quantity) : 0);
+    if (available < quantity) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'Not enough stock available for this sale.' });
+      return;
+    }
+    if (productId !== Number(sale.old_product_id)) {
+      await client.query(
+        'UPDATE products SET quantity_on_hand = quantity_on_hand + $1, updated_at = NOW() WHERE id = $2',
+        [sale.old_quantity, sale.old_product_id]
+      );
+    }
+    const unitCost = Number(newProduct.average_cost);
+    const total = quantity * unitPrice;
+    const saleDate = new Date(`${date}T00:00:00.000Z`);
+    await client.query(
+      'UPDATE products SET quantity_on_hand = $1, updated_at = NOW() WHERE id = $2',
+      [available - quantity, productId]
+    );
+    await client.query(
+      `UPDATE sales SET sale_date = $1, notes = $2 WHERE id = $3`,
+      [saleDate, String(req.body?.notes ?? '') || null, saleId]
+    );
+    await client.query(
+      `UPDATE sale_items SET product_id = $1, quantity = $2, unit_price = $3, unit_cost_at_sale = $4 WHERE id = $5`,
+      [productId, quantity, unitPrice, unitCost, sale.item_id]
+    );
+    await client.query(
+      `UPDATE stock_movements SET product_id = $1, quantity_delta = $2, unit_cost = $3, occurred_at = $4
+       WHERE sale_item_id = $5`,
+      [productId, -quantity, unitCost, saleDate, sale.item_id]
+    );
+    await client.query(
+      `UPDATE transactions SET amount = $1, cash_impact = $1, occurred_at = $2, description = $3
+       WHERE sale_id = $4`,
+      [total, saleDate, `${quantity} ${newProduct.name} sold`, saleId]
+    );
+    await client.query('COMMIT');
+    res.json({ id: saleId, productId, quantity, revenue: total, costOfGoodsSold: quantity * unitCost });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Could not update sale:', error);
+    res.status(500).json({ error: 'Sale could not be updated.' });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete('/api/sales/:id', async (req: Request, res: Response) => {
+  const saleId = Number(req.params.id);
+  if (!Number.isInteger(saleId) || saleId <= 0) {
+    res.status(400).json({ error: 'Invalid sale ID.' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const found = await client.query(
+      `SELECT s.id, si.id AS item_id, si.product_id, si.quantity
+       FROM sales s JOIN sale_items si ON si.sale_id = s.id
+       WHERE s.id = $1 AND s.status = 'completed'
+       FOR UPDATE OF s, si`,
+      [saleId]
+    );
+    const sale = found.rows[0];
+    if (!sale) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Completed sale not found.' });
+      return;
+    }
+    await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [sale.product_id]);
+    await client.query(
+      'UPDATE products SET quantity_on_hand = quantity_on_hand + $1, updated_at = NOW() WHERE id = $2',
+      [sale.quantity, sale.product_id]
+    );
+    await client.query('DELETE FROM transactions WHERE sale_id = $1', [saleId]);
+    await client.query('DELETE FROM stock_movements WHERE sale_item_id = $1', [sale.item_id]);
+    await client.query('DELETE FROM sale_items WHERE id = $1', [sale.item_id]);
+    await client.query('DELETE FROM sales WHERE id = $1', [saleId]);
+    await client.query('COMMIT');
+    res.status(204).end();
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Could not delete sale:', error);
+    res.status(500).json({ error: 'Sale could not be deleted.' });
+  } finally {
+    client.release();
+  }
+});
+
 app.get('/api/suppliers', async (_req: Request, res: Response) => {
   try {
     const result = await pool.query(
@@ -639,6 +1067,78 @@ app.get('/api/suppliers', async (_req: Request, res: Response) => {
   } catch (error) {
     console.error('Could not load suppliers:', error);
     res.status(500).json({ error: 'Unable to load suppliers.' });
+  }
+});
+
+app.post('/api/suppliers', async (req: Request, res: Response) => {
+  const name = String(req.body?.name ?? '').trim();
+  if (!name) {
+    res.status(400).json({ error: 'Supplier name is required.' });
+    return;
+  }
+  try {
+    const result = await pool.query(
+      `INSERT INTO suppliers (name, phone, email, address)
+       VALUES ($1, $2, $3, $4) RETURNING id, name, phone, email, address`,
+      [name, req.body?.phone ?? null, req.body?.email ?? null, req.body?.address ?? null]
+    );
+    res.status(201).json({ ...result.rows[0], id: Number(result.rows[0].id) });
+  } catch (error) {
+    console.error('Could not create supplier:', error);
+    res.status(409).json({ error: 'Supplier could not be saved. Check that its name is unique.' });
+  }
+});
+
+app.put('/api/suppliers/:id', async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const name = String(req.body?.name ?? '').trim();
+  if (!Number.isInteger(id) || id <= 0 || !name) {
+    res.status(400).json({ error: 'Provide a valid supplier ID and name.' });
+    return;
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE suppliers SET name = $1, phone = $2, email = $3, address = $4, updated_at = NOW()
+       WHERE id = $5 RETURNING id, name, phone, email, address`,
+      [name, req.body?.phone ?? null, req.body?.email ?? null, req.body?.address ?? null, id]
+    );
+    if (!result.rowCount) {
+      res.status(404).json({ error: 'Supplier not found.' });
+      return;
+    }
+    res.json({ ...result.rows[0], id: Number(result.rows[0].id) });
+  } catch (error) {
+    console.error('Could not update supplier:', error);
+    res.status(409).json({ error: 'Supplier could not be updated. Check that its name is unique.' });
+  }
+});
+
+app.delete('/api/suppliers/:id', async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid supplier ID.' });
+    return;
+  }
+  try {
+    const result = await pool.query(
+      `DELETE FROM suppliers s WHERE s.id = $1
+       AND NOT EXISTS (SELECT 1 FROM product_purchases WHERE supplier_id = s.id)
+       AND NOT EXISTS (SELECT 1 FROM supplier_payments WHERE supplier_id = s.id)
+       AND NOT EXISTS (SELECT 1 FROM supplier_returns WHERE supplier_id = s.id)
+       RETURNING s.id`,
+      [id]
+    );
+    if (result.rowCount) {
+      res.status(204).end();
+      return;
+    }
+    const exists = await pool.query('SELECT 1 FROM suppliers WHERE id = $1', [id]);
+    res.status(exists.rowCount ? 409 : 404).json({
+      error: exists.rowCount ? 'Supplier has financial or purchase history and cannot be deleted.' : 'Supplier not found.'
+    });
+  } catch (error) {
+    console.error('Could not delete supplier:', error);
+    res.status(500).json({ error: 'Supplier could not be deleted.' });
   }
 });
 
@@ -730,6 +1230,122 @@ app.post('/api/supplier-returns', async (req: Request, res: Response) => {
   }
 });
 
+app.get('/api/supplier-returns', async (_req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      `SELECT sr.*, su.name AS supplier, p.name AS product, t.id AS transaction_id
+       FROM supplier_returns sr
+       JOIN suppliers su ON su.id = sr.supplier_id
+       JOIN products p ON p.id = sr.product_id
+       LEFT JOIN transactions t ON t.supplier_return_id = sr.id
+       ORDER BY sr.return_date DESC, sr.id DESC`
+    );
+    res.json(result.rows.map((row) => ({
+      id: Number(row.id),
+      transactionId: Number(row.transaction_id),
+      supplierId: Number(row.supplier_id),
+      supplier: row.supplier,
+      productId: Number(row.product_id),
+      product: row.product,
+      purchaseId: row.purchase_id === null ? null : Number(row.purchase_id),
+      quantity: Number(row.quantity),
+      unitCost: Number(row.unit_cost),
+      amount: Number(row.amount),
+      settlementType: row.settlement_type,
+      date: new Date(row.return_date).toISOString().slice(0, 10),
+      notes: row.notes
+    })));
+  } catch (error) {
+    console.error('Could not load supplier returns:', error);
+    res.status(500).json({ error: 'Unable to load supplier returns.' });
+  }
+});
+
+app.put('/api/supplier-returns/:id', async (req: Request, res: Response) => {
+  const returnId = Number(req.params.id);
+  const supplierId = Number(req.body?.supplierId);
+  const quantity = Number(req.body?.quantity);
+  const unitCost = Number(req.body?.unitCost);
+  const amount = Number(req.body?.amount);
+  const settlementType = String(req.body?.settlementType ?? '');
+  const date = String(req.body?.date ?? '');
+  if (!Number.isInteger(returnId) || returnId <= 0 || !Number.isInteger(supplierId) || supplierId <= 0
+    || !Number.isInteger(quantity) || quantity <= 0 || !Number.isFinite(unitCost) || unitCost < 0
+    || !Number.isFinite(amount) || amount <= 0 || !['supplier_credit', 'cash_refund'].includes(settlementType)
+    || !isValidDate(date)) {
+    res.status(400).json({ error: 'Provide a valid supplier return with positive quantity and amount, cost, settlement type, and date.' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const found = await client.query(
+      `SELECT sr.*, sm.id AS movement_id, p.name, p.quantity_on_hand
+       FROM supplier_returns sr
+       JOIN stock_movements sm ON sm.supplier_return_id = sr.id
+       JOIN products p ON p.id = sr.product_id
+       WHERE sr.id = $1 FOR UPDATE OF sr, sm, p`,
+      [returnId]
+    );
+    const item = found.rows[0];
+    if (!item) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Supplier return not found.' });
+      return;
+    }
+    const supplier = await client.query('SELECT id FROM suppliers WHERE id = $1', [supplierId]);
+    if (!supplier.rowCount) {
+      await client.query('ROLLBACK');
+      res.status(400).json({ error: 'The selected supplier does not exist.' });
+      return;
+    }
+    if (item.purchase_id) {
+      const purchase = await client.query(
+        'SELECT id FROM product_purchases WHERE id = $1 AND supplier_id = $2',
+        [item.purchase_id, supplierId]
+      );
+      if (!purchase.rowCount) {
+        await client.query('ROLLBACK');
+        res.status(409).json({ error: 'Selected supplier does not match the linked purchase.' });
+        return;
+      }
+    }
+    const available = Number(item.quantity_on_hand) + Number(item.quantity) - quantity;
+    if (available < 0) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'Return quantity exceeds available stock.' });
+      return;
+    }
+    const returnDate = new Date(`${date}T00:00:00.000Z`);
+    await client.query(
+      `UPDATE supplier_returns SET supplier_id = $1, quantity = $2, unit_cost = $3,
+         amount = $4, settlement_type = $5, return_date = $6, notes = $7 WHERE id = $8`,
+      [supplierId, quantity, unitCost, amount, settlementType, returnDate, req.body?.notes ?? null, returnId]
+    );
+    await client.query(
+      'UPDATE products SET quantity_on_hand = $1, updated_at = NOW() WHERE id = $2',
+      [available, item.product_id]
+    );
+    await client.query(
+      `UPDATE stock_movements SET quantity_delta = $1, occurred_at = $2 WHERE id = $3`,
+      [-quantity, returnDate, item.movement_id]
+    );
+    await client.query(
+      `UPDATE transactions SET amount = $1, cash_impact = $2, occurred_at = $3, description = $4
+       WHERE supplier_return_id = $5`,
+      [amount, settlementType === 'cash_refund' ? amount : 0, returnDate, `${quantity} ${item.name} returned to supplier`, returnId]
+    );
+    await client.query('COMMIT');
+    res.json({ id: returnId, quantity, amount, settlementType });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Could not update supplier return:', error);
+    res.status(500).json({ error: 'The supplier return could not be updated.' });
+  } finally {
+    client.release();
+  }
+});
+
 app.post('/api/stock-adjustments', async (req: Request, res: Response) => {
   const body = req.body ?? {};
   const productId = Number(body.productId);
@@ -782,6 +1398,150 @@ app.post('/api/stock-adjustments', async (req: Request, res: Response) => {
     await client.query('ROLLBACK');
     console.error('Could not adjust stock:', error);
     res.status(500).json({ error: 'The stock adjustment could not be saved.' });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/stock-movements', async (_req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      `SELECT sm.id, sm.product_id, p.name AS product, sm.movement_type, sm.quantity_delta,
+         sm.unit_cost, sm.occurred_at
+       FROM stock_movements sm JOIN products p ON p.id = sm.product_id
+       ORDER BY sm.occurred_at DESC, sm.id DESC`
+    );
+    res.json(result.rows.map((row) => ({
+      id: Number(row.id),
+      productId: Number(row.product_id),
+      product: row.product,
+      movementType: row.movement_type,
+      quantityDelta: Number(row.quantity_delta),
+      unitCost: Number(row.unit_cost),
+      date: new Date(row.occurred_at).toISOString()
+    })));
+  } catch (error) {
+    console.error('Could not load stock movements:', error);
+    res.status(500).json({ error: 'Unable to load stock movements.' });
+  }
+});
+
+app.put('/api/stock-adjustments/:id', async (req: Request, res: Response) => {
+  const movementId = Number(req.params.id);
+  const quantityDelta = Number(req.body?.quantityDelta);
+  const requestedCost = Number(req.body?.unitCost ?? 0);
+  if (!Number.isInteger(movementId) || movementId <= 0 || !Number.isInteger(quantityDelta) || quantityDelta === 0
+    || !Number.isFinite(requestedCost) || requestedCost < 0) {
+    res.status(400).json({ error: 'Provide a valid movement ID, non-zero whole-number adjustment, and non-negative cost.' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const movementResult = await client.query(
+      `SELECT id, product_id, quantity_delta, unit_cost FROM stock_movements
+       WHERE id = $1 AND movement_type = 'adjustment' FOR UPDATE`,
+      [movementId]
+    );
+    const movement = movementResult.rows[0];
+    if (!movement) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Stock adjustment not found.' });
+      return;
+    }
+    const productResult = await client.query(
+      'SELECT quantity_on_hand, average_cost FROM products WHERE id = $1 FOR UPDATE',
+      [movement.product_id]
+    );
+    const product = productResult.rows[0];
+    const currentQuantity = Number(product.quantity_on_hand);
+    const oldDelta = Number(movement.quantity_delta);
+    const quantityAfterUndo = currentQuantity - oldDelta;
+    if (quantityAfterUndo < 0) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'This adjustment cannot be changed because the stock is no longer available.' });
+      return;
+    }
+    const valueAfterUndo = oldDelta > 0
+      ? currentQuantity * Number(product.average_cost) - oldDelta * Number(movement.unit_cost)
+      : quantityAfterUndo * Number(product.average_cost);
+    if (valueAfterUndo < -0.01 || quantityAfterUndo + quantityDelta < 0) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'Adjustment would make stock quantity or valuation invalid.' });
+      return;
+    }
+    const averageAfterUndo = quantityAfterUndo === 0 ? 0 : Math.max(0, valueAfterUndo) / quantityAfterUndo;
+    const unitCost = quantityDelta > 0 ? requestedCost : averageAfterUndo;
+    const nextQuantity = quantityAfterUndo + quantityDelta;
+    const nextAverage = nextQuantity === 0 ? 0 : quantityDelta > 0
+      ? (quantityAfterUndo * averageAfterUndo + quantityDelta * unitCost) / nextQuantity
+      : averageAfterUndo;
+    await client.query(
+      'UPDATE products SET quantity_on_hand = $1, average_cost = $2, updated_at = NOW() WHERE id = $3',
+      [nextQuantity, nextAverage, movement.product_id]
+    );
+    await client.query(
+      'UPDATE stock_movements SET quantity_delta = $1, unit_cost = $2 WHERE id = $3',
+      [quantityDelta, unitCost, movementId]
+    );
+    await client.query('COMMIT');
+    res.json({ id: movementId, quantityOnHand: nextQuantity });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Could not update stock adjustment:', error);
+    res.status(500).json({ error: 'The stock adjustment could not be updated.' });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete('/api/stock-adjustments/:id', async (req: Request, res: Response) => {
+  const movementId = Number(req.params.id);
+  if (!Number.isInteger(movementId) || movementId <= 0) {
+    res.status(400).json({ error: 'Invalid stock adjustment ID.' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const movementResult = await client.query(
+      `SELECT id, product_id, quantity_delta, unit_cost FROM stock_movements
+       WHERE id = $1 AND movement_type = 'adjustment' FOR UPDATE`,
+      [movementId]
+    );
+    const movement = movementResult.rows[0];
+    if (!movement) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Stock adjustment not found.' });
+      return;
+    }
+    const productResult = await client.query(
+      'SELECT quantity_on_hand, average_cost FROM products WHERE id = $1 FOR UPDATE',
+      [movement.product_id]
+    );
+    const product = productResult.rows[0];
+    const currentQuantity = Number(product.quantity_on_hand);
+    const delta = Number(movement.quantity_delta);
+    const quantity = currentQuantity - delta;
+    const value = delta > 0
+      ? currentQuantity * Number(product.average_cost) - delta * Number(movement.unit_cost)
+      : quantity * Number(product.average_cost);
+    if (quantity < 0 || value < -0.01) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'This adjustment cannot be deleted because the stock is no longer available.' });
+      return;
+    }
+    await client.query(
+      'UPDATE products SET quantity_on_hand = $1, average_cost = $2, updated_at = NOW() WHERE id = $3',
+      [quantity, quantity === 0 ? 0 : Math.max(0, value) / quantity, movement.product_id]
+    );
+    await client.query('DELETE FROM stock_movements WHERE id = $1', [movementId]);
+    await client.query('COMMIT');
+    res.status(204).end();
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Could not delete stock adjustment:', error);
+    res.status(500).json({ error: 'The stock adjustment could not be deleted.' });
   } finally {
     client.release();
   }
@@ -864,6 +1624,223 @@ app.post('/api/transactions', async (req: Request, res: Response) => {
     await client.query('ROLLBACK');
     console.error('Could not save financial transaction:', error);
     res.status(500).json({ error: 'The transaction could not be saved.' });
+  } finally {
+    client.release();
+  }
+});
+
+app.put('/api/transactions/:id', async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const amount = Number(req.body?.amount);
+  const date = String(req.body?.date ?? '');
+  const description = String(req.body?.description ?? '').trim();
+  if (!Number.isInteger(id) || id <= 0 || !Number.isFinite(amount) || amount === 0
+    || !isValidDate(date) || !description) {
+    res.status(400).json({ error: 'Provide a non-zero amount, valid date, and description.' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query('SELECT * FROM transactions WHERE id = $1 FOR UPDATE', [id]);
+    const transaction = result.rows[0];
+    if (!transaction) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Transaction not found.' });
+      return;
+    }
+    if (transaction.event_type === 'inventory_purchase' || transaction.event_type === 'sale'
+      || transaction.event_type === 'supplier_return') {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'Edit this record from Product Investment, Product Management, or the returns workflow.' });
+      return;
+    }
+
+    const occurredAt = new Date(`${date}T00:00:00.000Z`);
+    const signedAmount = transaction.event_type === 'operating_expense' || transaction.event_type === 'supplier_payment'
+      || transaction.event_type === 'owner_withdrawal' ? -Math.abs(amount)
+      : transaction.event_type === 'cash_adjustment' ? amount : Math.abs(amount);
+    if (transaction.business_capital_id) {
+      await client.query(
+        'UPDATE business_capitals SET amount = $1, occurred_at = $2, description = $3 WHERE id = $4',
+        [Math.abs(signedAmount), occurredAt, description, transaction.business_capital_id]
+      );
+    } else if (transaction.expense_id) {
+      await client.query(
+        'UPDATE expenses SET amount = $1, expense_date = $2, description = $3, category = $4 WHERE id = $5',
+        [Math.abs(signedAmount), occurredAt, description, String(req.body?.category ?? 'Operating expense'), transaction.expense_id]
+      );
+    } else if (transaction.supplier_payment_id) {
+      const supplierId = Number(req.body?.supplierId ?? 0);
+      if (!Number.isInteger(supplierId) || supplierId <= 0) {
+        await client.query('ROLLBACK');
+        res.status(400).json({ error: 'Select a valid supplier for this payment.' });
+        return;
+      }
+      const supplier = await client.query('SELECT id FROM suppliers WHERE id = $1', [supplierId]);
+      if (!supplier.rowCount) {
+        await client.query('ROLLBACK');
+        res.status(400).json({ error: 'The selected supplier does not exist.' });
+        return;
+      }
+      const currentPayment = await client.query(
+        'SELECT purchase_id FROM supplier_payments WHERE id = $1 FOR UPDATE',
+        [transaction.supplier_payment_id]
+      );
+      const purchaseId = currentPayment.rows[0]?.purchase_id;
+      if (purchaseId) {
+        const purchase = await client.query(
+          `SELECT pp.supplier_id, pi.line_total FROM product_purchases pp
+           JOIN purchase_items pi ON pi.purchase_id = pp.id WHERE pp.id = $1`,
+          [purchaseId]
+        );
+        const otherPayments = await client.query(
+          'SELECT COALESCE(SUM(amount), 0) AS amount FROM supplier_payments WHERE purchase_id = $1 AND id <> $2',
+          [purchaseId, transaction.supplier_payment_id]
+        );
+        if (!purchase.rowCount || Number(purchase.rows[0].supplier_id) !== supplierId
+          || Number(otherPayments.rows[0].amount) + Math.abs(signedAmount) > Number(purchase.rows[0].line_total)) {
+          await client.query('ROLLBACK');
+          res.status(409).json({ error: 'Payment supplier or amount conflicts with the linked purchase balance.' });
+          return;
+        }
+      }
+      await client.query(
+        `UPDATE supplier_payments SET supplier_id = $1, amount = $2, payment_date = $3,
+          method = $4, reference = $5 WHERE id = $6`,
+        [supplierId, Math.abs(signedAmount), occurredAt, req.body?.method ?? null, req.body?.reference ?? null, transaction.supplier_payment_id]
+      );
+    } else {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'This transaction type cannot be edited here.' });
+      return;
+    }
+    await client.query(
+      'UPDATE transactions SET amount = $1, cash_impact = $2, occurred_at = $3, description = $4 WHERE id = $5',
+      [Math.abs(signedAmount), signedAmount, occurredAt, description, id]
+    );
+    await client.query('COMMIT');
+    res.json({ id, amount: signedAmount, date, description });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Could not update transaction:', error);
+    res.status(500).json({ error: 'The transaction could not be updated.' });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete('/api/transactions/:id', async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid transaction ID.' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query('SELECT * FROM transactions WHERE id = $1 FOR UPDATE', [id]);
+    const transaction = result.rows[0];
+    if (!transaction) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Transaction not found.' });
+      return;
+    }
+    await client.query('DELETE FROM transactions WHERE id = $1', [id]);
+
+    if (transaction.sale_id) {
+      const sale = await client.query(
+        `SELECT si.id AS item_id, si.product_id, si.quantity FROM sale_items si
+         WHERE si.sale_id = $1 FOR UPDATE`,
+        [transaction.sale_id]
+      );
+      if (sale.rowCount !== 1) throw new Error('Sale does not contain exactly one editable item.');
+      const item = sale.rows[0];
+      await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [item.product_id]);
+      await client.query(
+        'UPDATE products SET quantity_on_hand = quantity_on_hand + $1, updated_at = NOW() WHERE id = $2',
+        [item.quantity, item.product_id]
+      );
+      await client.query('DELETE FROM stock_movements WHERE sale_item_id = $1', [item.item_id]);
+      await client.query('DELETE FROM sale_items WHERE id = $1', [item.item_id]);
+      await client.query('DELETE FROM sales WHERE id = $1', [transaction.sale_id]);
+    } else if (transaction.product_purchase_id) {
+      const purchase = await client.query(
+        `SELECT pp.purchase_date, pi.id AS item_id, pi.product_id, pi.quantity, pi.unit_cost,
+           p.quantity_on_hand, p.average_cost
+         FROM product_purchases pp
+         JOIN purchase_items pi ON pi.purchase_id = pp.id
+         JOIN products p ON p.id = pi.product_id
+         WHERE pp.id = $1 FOR UPDATE OF pp, pi, p`,
+        [transaction.product_purchase_id]
+      );
+      if (purchase.rowCount !== 1) throw new Error('Purchase does not contain exactly one editable item.');
+      const item = purchase.rows[0];
+      const sold = await client.query(
+        `SELECT 1 FROM sale_items si JOIN sales s ON s.id = si.sale_id
+         WHERE si.product_id = $1 AND s.status = 'completed' AND s.sale_date >= $2 LIMIT 1`,
+        [item.product_id, item.purchase_date]
+      );
+      if (sold.rowCount || Number(item.quantity_on_hand) < Number(item.quantity)) {
+        await client.query('ROLLBACK');
+        res.status(409).json({ error: 'Purchase cannot be deleted after related stock has been sold or returned.' });
+        return;
+      }
+      const nextQuantity = Number(item.quantity_on_hand) - Number(item.quantity);
+      const nextValue = Number(item.quantity_on_hand) * Number(item.average_cost) - Number(item.quantity) * Number(item.unit_cost);
+      if (nextValue < -0.01) {
+        await client.query('ROLLBACK');
+        res.status(409).json({ error: 'Deleting this purchase would make inventory valuation invalid.' });
+        return;
+      }
+      await client.query('UPDATE supplier_payments SET purchase_id = NULL WHERE purchase_id = $1', [transaction.product_purchase_id]);
+      await client.query('DELETE FROM stock_movements WHERE purchase_item_id = $1', [item.item_id]);
+      await client.query('DELETE FROM purchase_items WHERE id = $1', [item.item_id]);
+      await client.query('DELETE FROM product_purchases WHERE id = $1', [transaction.product_purchase_id]);
+      await client.query(
+        'UPDATE products SET quantity_on_hand = $1, average_cost = $2, updated_at = NOW() WHERE id = $3',
+        [nextQuantity, nextQuantity === 0 ? 0 : Math.max(0, nextValue) / nextQuantity, item.product_id]
+      );
+    } else if (transaction.supplier_return_id) {
+      const returned = await client.query(
+        `SELECT sr.id, sr.product_id, sr.quantity, sm.unit_cost
+         FROM supplier_returns sr
+         JOIN stock_movements sm ON sm.supplier_return_id = sr.id
+         WHERE sr.id = $1 FOR UPDATE OF sr, sm`,
+        [transaction.supplier_return_id]
+      );
+      const item = returned.rows[0];
+      if (!item) throw new Error('Supplier return source is missing.');
+      const productResult = await client.query(
+        'SELECT quantity_on_hand, average_cost FROM products WHERE id = $1 FOR UPDATE',
+        [item.product_id]
+      );
+      const product = productResult.rows[0];
+      const oldQuantity = Number(product.quantity_on_hand);
+      const quantity = Number(item.quantity);
+      const nextQuantity = oldQuantity + quantity;
+      const nextAverage = nextQuantity === 0 ? 0
+        : (oldQuantity * Number(product.average_cost) + quantity * Number(item.unit_cost)) / nextQuantity;
+      await client.query(
+        'UPDATE products SET quantity_on_hand = $1, average_cost = $2, updated_at = NOW() WHERE id = $3',
+        [nextQuantity, nextAverage, item.product_id]
+      );
+      await client.query('DELETE FROM stock_movements WHERE supplier_return_id = $1', [transaction.supplier_return_id]);
+      await client.query('DELETE FROM supplier_returns WHERE id = $1', [transaction.supplier_return_id]);
+    } else if (transaction.business_capital_id) {
+      await client.query('DELETE FROM business_capitals WHERE id = $1', [transaction.business_capital_id]);
+    } else if (transaction.expense_id) {
+      await client.query('DELETE FROM expenses WHERE id = $1', [transaction.expense_id]);
+    } else if (transaction.supplier_payment_id) {
+      await client.query('DELETE FROM supplier_payments WHERE id = $1', [transaction.supplier_payment_id]);
+    }
+
+    await client.query('COMMIT');
+    res.status(204).end();
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Could not delete transaction:', error);
+    res.status(500).json({ error: 'The transaction could not be deleted.' });
   } finally {
     client.release();
   }
