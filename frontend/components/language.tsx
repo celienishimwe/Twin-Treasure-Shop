@@ -206,6 +206,7 @@ const translations: Record<string, string> = {
   'How profit is calculated': 'Uko inyungu ibarwa',
   'sales revenue − cost of products sold.': 'amafaranga y’igurisha − ikiguzi cy’ibicuruzwa byagurishijwe.',
   'gross profit − operating expenses.': 'inyungu mbumbe − amafaranga akoreshwa mu bucuruzi.',
+  'Example: buy for RWF 10,000 and sell for RWF 14,000. Gross profit is RWF 4,000 before operating expenses.': 'Urugero: gura kuri RWF 10,000 ugurishe kuri RWF 14,000. Inyungu mbumbe ni RWF 4,000 mbere yo gukuramo amafaranga akoreshwa mu bucuruzi.',
   'Supplier payments and inventory purchases reduce cash but are not counted as operating expenses; product cost is counted when the item sells.': 'Ubwishyu ku batanga ibicuruzwa n’amasoko bigabanya amafaranga ahari ariko ntibibarwa nk’amafaranga akoreshwa; ikiguzi cy’igicuruzwa kibarwa iyo kigurishijwe.',
   'Other recorded income this period:': 'Andi mafaranga yinjiye muri iki gihe:',
   'Type': 'Ubwoko',

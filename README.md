@@ -57,6 +57,7 @@ Authentication uses an HTTP-only, signed session cookie. Set `SESSION_SECRET` to
 
 - Gross profit = sales revenue - cost of products sold.
 - Net profit/loss = sales revenue − cost of products sold − operating expenses.
+- Example: buy an item for RWF 10,000 and sell it for RWF 14,000; gross profit is RWF 4,000, then operating expenses are deducted to get net profit.
 - Capital contributions and owner withdrawals affect cash, not profit. Inventory purchases add inventory and supplier payments reduce cash; product cost is counted when the item sells.
 - Closing cash balance is the signed total of all recorded cash movements through the selected period's end date.
 

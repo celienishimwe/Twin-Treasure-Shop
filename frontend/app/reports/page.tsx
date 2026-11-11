@@ -104,6 +104,7 @@ export default function ReportsPage() {
             <h3>{t('How profit is calculated')}</h3>
             <p><strong>{t('Gross profit')}</strong> = {t('sales revenue − cost of products sold.')}</p>
             <p><strong>{t('Net profit / loss')}</strong> = {t('gross profit − operating expenses.')}</p>
+            <p>{t('Example: buy for RWF 10,000 and sell for RWF 14,000. Gross profit is RWF 4,000 before operating expenses.')}</p>
             <p>{t('Supplier payments and inventory purchases reduce cash but are not counted as operating expenses; product cost is counted when the item sells.')}</p>
             {report.otherIncome > 0 && <p>{t('Other recorded income this period:')} <strong>{formatMoney(report.otherIncome)}</strong>.</p>}
           </div>
