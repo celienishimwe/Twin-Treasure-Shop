@@ -159,7 +159,7 @@ button:disabled { opacity: .6; cursor: wait; }
 .outline-button:hover { border-color: rgba(62, 208, 183, .44); color: white; }
 .error-banner { margin-bottom: 16px; padding: 12px 14px; border: 1px solid rgba(241, 125, 136, .4); border-radius: 9px; color: #ffc2c8; background: rgba(110, 31, 48, .24); font-size: .84rem; }
 
-.profit-loss-section { margin: 0 0 16px; padding: 17px; border: 1px solid rgba(50, 201, 173, .24); border-radius: 12px; background: linear-gradient(135deg, rgba(10, 78, 72, .33), rgba(24, 38, 52, .9) 54%); }
+.profit-loss-section { margin: 0 0 16px; padding: 17px; border: 1px solid rgba(50, 201, 173, .24); border-radius: 12px; background: var(--panel); }
 .period-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .period-heading h3 { margin: 0 0 5px; color: #eaf3f4; font-size: .98rem; }
 .period-heading > div:first-child > span { color: #8fa7b1; font-size: .68rem; }
@@ -175,16 +175,10 @@ button:disabled { opacity: .6; cursor: wait; }
 .dashboard-metric, .dashboard-panel, .quick-stats {
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: linear-gradient(140deg, rgba(28, 44, 60, .98), rgba(24, 38, 52, .98));
+  background: var(--panel);
   box-shadow: var(--shadow);
 }
 .dashboard-metric { position: relative; min-height: 132px; padding: 17px 18px; overflow: hidden; }
-.dashboard-metric::after { position: absolute; right: -25px; bottom: -48px; width: 130px; height: 90px; border-radius: 50%; background: var(--glow); content: ""; filter: blur(28px); opacity: .18; }
-.dashboard-metric.mint { --glow: #38d7ae; }
-.dashboard-metric.blue { --glow: #4298e9; }
-.dashboard-metric.amber { --glow: #e6b151; }
-.dashboard-metric.violet { --glow: #9b7dea; }
-.dashboard-metric.rose { --glow: #ed7487; }
 .metric-top { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; }
 .metric-icon { display: grid; place-items: center; min-width: 29px; height: 27px; padding: 0 5px; border: 1px solid rgba(108, 208, 193, .18); border-radius: 7px; color: #7cd7c6; background: rgba(36, 152, 135, .12); font-size: .54rem; font-weight: 800; }
 .metric-label { color: #a4b7c3; font-size: .76rem; }
@@ -286,7 +280,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid rgba(40, 196, 170
 .report-range span, .report-range small { color: #91a5b4; font-size: .71rem; }
 .report-range small { margin-left: auto; }
 .report-metrics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; margin-bottom: 15px; }
-.report-metric { min-height: 95px; padding: 15px; border: 1px solid var(--border); border-radius: 10px; background: linear-gradient(140deg, #1c2c3c, #182635); box-shadow: var(--shadow); }
+.report-metric { min-height: 95px; padding: 15px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); box-shadow: var(--shadow); }
 .report-metric span { display: block; color: #96aab6; font-size: .72rem; }
 .report-metric strong { display: block; margin-top: 12px; color: #e9f3f4; font-size: 1.08rem; }
 .report-metric.emphasized { border-color: rgba(50, 201, 173, .28); }
@@ -362,9 +356,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid rgba(40, 196, 170
   color: var(--text);
   background: #f5f9fa;
 }
-:root[data-theme="light"] .profit-loss-section {
-  background: linear-gradient(135deg, #e6f7f3, #f8fbfc 70%);
-}
+:root[data-theme="light"] .profit-loss-section { background: var(--panel); }
 :root[data-theme="light"] input,
 :root[data-theme="light"] select,
 :root[data-theme="light"] textarea,
